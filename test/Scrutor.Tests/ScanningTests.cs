@@ -1,13 +1,15 @@
 ﻿using Microsoft.Extensions.DependencyInjection;
 using Scrutor.Tests;
 using System;
+using System.Collections;
+using System.Collections.Generic;
 using System.Linq;
 using System.Runtime.CompilerServices;
 using Xunit;
 
 namespace Scrutor.Tests
 {
-    using Scrutor.Tests.ChildNamespace;
+    using ChildNamespace;
 
     public class ScanningTests : TestBase
     {
@@ -17,8 +19,8 @@ namespace Scrutor.Tests
         public void Scan_TheseTypes()
         {
             Collection.Scan(scan => scan
-                .AddTypes<TransientService1, TransientService2>()
-                    .AsImplementedInterfaces()
+                .FromTypes<TransientService1, TransientService2>()
+                    .AsImplementedInterfaces(x => x != typeof(IOtherInheritance))
                     .WithSingletonLifetime());
 
             Assert.Equal(2, Collection.Count);
@@ -116,7 +118,22 @@ namespace Scrutor.Tests
 
             var services = Collection.GetDescriptors<ITransientService>();
 
-            Assert.Equal(4, services.Count(x => x.ServiceType == typeof(ITransientService)));
+            Assert.Equal(3, services.Count(x => x.ServiceType == typeof(ITransientService)));
+        }
+
+        [Fact]
+        public void UsingRegistrationStrategy_Throw()
+        {
+            Assert.Throws<DuplicateTypeRegistrationException>(() =>
+                Collection.Scan(scan => scan
+                    .FromAssemblyOf<ITransientService>()
+                    .AddClasses(classes => classes.AssignableTo<ITransientService>())
+                    .AsImplementedInterfaces()
+                    .WithTransientLifetime()
+                    .AddClasses(classes => classes.AssignableTo<ITransientService>())
+                    .UsingRegistrationStrategy(RegistrationStrategy.Throw)
+                    .AsImplementedInterfaces()
+                    .WithSingletonLifetime()));
         }
 
         [Fact]
@@ -125,7 +142,7 @@ namespace Scrutor.Tests
             Collection.Scan(scan => scan
                 .FromAssemblyOf<ITransientService>()
                     .AddClasses(classes => classes.AssignableTo<ITransientService>())
-                        .AsImplementedInterfaces()
+                        .AsImplementedInterfaces(x => x != typeof(IOtherInheritance))
                         .WithTransientLifetime());
 
             var services = Collection.GetDescriptors<ITransientService>();
@@ -177,6 +194,18 @@ namespace Scrutor.Tests
         }
 
         [Fact]
+        public void LifetimeIsPropagatedToAllRegistrations()
+        {
+            Collection.Scan(scan => scan.FromAssemblyOf<IScopedService>()
+                .AddClasses(classes => classes.AssignableTo<IScopedService>())
+                .AsImplementedInterfaces()
+                .AsSelf()
+                .WithScopedLifetime());
+
+            Assert.All(Collection, service => Assert.Equal(ServiceLifetime.Scoped, service.Lifetime));
+        }
+
+        [Fact]
         public void CanRegisterGenericTypes()
         {
             Collection.Scan(scan => scan.FromAssemblyOf<IScopedService>()
@@ -189,6 +218,19 @@ namespace Scrutor.Tests
             Assert.NotNull(service);
             Assert.Equal(ServiceLifetime.Scoped, service.Lifetime);
             Assert.Equal(typeof(QueryHandler), service.ImplementationType);
+        }
+
+        [Fact]
+        public void CanRegisterFullyClosedGenericWithDifferentArityThanServiceType()
+        {
+            Collection.Scan(scan => scan
+                .FromTypes(typeof(PartiallyClosedGeneric<string>))
+                .AsImplementedInterfaces()
+                .WithTransientLifetime());
+
+            var descriptor = Assert.Single(Collection);
+
+            Assert.Equal(typeof(IPartiallyClosedGeneric<string, int>), descriptor.ServiceType);
         }
 
         [Fact]
@@ -223,13 +265,29 @@ namespace Scrutor.Tests
                 .AddClasses(t => t.AssignableTo<ITransientService>())
                     .UsingAttributes());
 
-            Assert.Equal(1, Collection.Count);
+            Assert.Single(Collection);
 
             var service = Collection.GetDescriptor<ITransientService>();
 
             Assert.NotNull(service);
             Assert.Equal(ServiceLifetime.Transient, service.Lifetime);
             Assert.Equal(typeof(TransientService1), service.ImplementationType);
+        }
+
+        [Fact]
+        public void CanFilterGenericAttributeTypes()
+        {
+            Collection.Scan(scan => scan.FromAssemblyOf<IGenericAttribute>()
+                .AddClasses(t => t.AssignableTo<IGenericAttribute>())
+                    .UsingAttributes());
+
+            Assert.Single(Collection);
+
+            var service = Collection.GetDescriptor<IGenericAttribute>();
+
+            Assert.NotNull(service);
+            Assert.Equal(ServiceLifetime.Transient, service.Lifetime);
+            Assert.Equal(typeof(GenericAttribute), service.ImplementationType);
         }
 
         [Fact]
@@ -283,6 +341,19 @@ namespace Scrutor.Tests
         }
 
         [Fact]
+        public void ThrowsOnDuplicateWithMixedAttributes()
+        {
+            var collection = new ServiceCollection();
+
+            var ex = Assert.Throws<InvalidOperationException>(() =>
+                collection.Scan(scan => scan.FromAssemblyOf<IMixedAttribute>()
+                    .AddClasses(t => t.AssignableTo<IMixedAttribute>())
+                        .UsingAttributes()));
+
+            Assert.Equal(@"Type ""Scrutor.Tests.MixedAttribute"" has multiple ServiceDescriptor attributes with the same service type.", ex.Message);
+        }
+
+        [Fact]
         public void CanHandleMultipleAttributes()
         {
             Collection.Scan(scan => scan.FromAssemblyOf<ITransientServiceToCombine>()
@@ -316,7 +387,7 @@ namespace Scrutor.Tests
                     .AsMatchingInterface()
                     .WithTransientLifetime());
 
-            Assert.Equal(6, Collection.Count);
+            Assert.Equal(8, Collection.Count);
 
             var services = Collection.GetDescriptors<ITransientService>();
 
@@ -333,10 +404,10 @@ namespace Scrutor.Tests
         {
             Collection.Scan(scan => scan.FromAssemblyOf<ITransientService>()
                 .AddClasses()
-                    .AsMatchingInterface((t, x) => x.InNamespaces(t.Namespace))
+                    .AsMatchingInterface((t, x) => x.InNamespaceOf(t))
                     .WithTransientLifetime());
 
-            Assert.Equal(5, Collection.Count);
+            Assert.Equal(7, Collection.Count);
 
             var service = Collection.GetDescriptor<ITransientService>();
 
@@ -356,7 +427,7 @@ namespace Scrutor.Tests
             };
 
             Collection.Scan(scan => scan
-                .AddTypes(genericTypes)
+                .FromTypes(genericTypes)
                     .AddClasses()
                     .AsImplementedInterfaces());
 
@@ -375,7 +446,7 @@ namespace Scrutor.Tests
         [Fact]
         public void ShouldNotIncludeCompilerGeneratedTypes()
         {
-            Assert.Empty(Collection.Scan(scan => scan.AddType<CompilerGenerated>()));
+            Assert.Empty(Collection.Scan(scan => scan.FromType<CompilerGenerated>()));
         }
 
         [Fact]
@@ -461,16 +532,66 @@ namespace Scrutor.Tests
             Assert.Same(instance1, instance4);
             Assert.Same(instance1, instance5);
         }
+
+        [Fact]
+        public void AsSelfWithInterfacesShouldFilterInterfaces()
+        {
+            var provider = ConfigureProvider(services =>
+            {
+                services.Scan(scan => scan
+                    .FromAssemblyOf<CombinedService2>()
+                    .AddClasses(classes => classes.AssignableTo<CombinedService2>())
+                    .AsSelfWithInterfaces(x => x == typeof(IDefault1) || x == typeof(CombinedService2))
+                    .WithSingletonLifetime());
+            });
+
+            var instance1 = provider.GetRequiredService<CombinedService2>();
+            var instance2 = provider.GetRequiredService<IDefault1>();
+            var instance3 = provider.GetService<IDefault2>();
+            var instance4 = provider.GetService<IDefault3Level2>();
+            var instance5 = provider.GetService<IDefault3Level1>();
+
+            Assert.Same(instance1, instance2);
+            Assert.Null(instance3);
+            Assert.Null(instance4);
+            Assert.Null(instance5);
+        }
+
+        [Fact]
+        public void AsSelfWithInterfacesHandlesOpenGenericTypes()
+        {
+            ConfigureProvider(services =>
+            {
+                services.Scan(scan => scan
+                    .FromAssemblyOf<CombinedService2>()
+                    .AddClasses(classes => classes.AssignableTo<IOtherInheritance>())
+                    .AsSelfWithInterfaces()
+                    .WithSingletonLifetime());
+            });
+        }
     }
+
+    // ReSharper disable UnusedTypeParameter
 
     public interface ITransientService { }
 
     [ServiceDescriptor(typeof(ITransientService))]
     public class TransientService1 : ITransientService { }
 
-    public class TransientService2 : ITransientService { }
+    public class TransientService2 : ITransientService, IOtherInheritance { }
 
-    public class TransientService : ITransientService { }
+    public class TransientService : ITransientService, IEnumerable<string>
+    {
+        public IEnumerator<string> GetEnumerator()
+        {
+            throw new NotImplementedException();
+        }
+
+        IEnumerator IEnumerable.GetEnumerator()
+        {
+            throw new NotImplementedException();
+        }
+    }
 
     public interface IScopedService { }
 
@@ -516,7 +637,7 @@ namespace Scrutor.Tests
     [ServiceDescriptor(typeof(IDuplicateInheritance))]
     [ServiceDescriptor(typeof(IDuplicateInheritance))]
     public class DuplicateInheritance : IDuplicateInheritance, IOtherInheritance { }
-    
+
     public interface IDefault1 { }
 
     public interface IDefault2 { }
@@ -532,6 +653,17 @@ namespace Scrutor.Tests
     public class CompilerGenerated { }
 
     public class CombinedService2: IDefault1, IDefault2, IDefault3Level2 { }
+
+    public interface IGenericAttribute { }
+
+    [ServiceDescriptor<IGenericAttribute>]
+    public class GenericAttribute : IGenericAttribute { }
+
+    public interface IMixedAttribute { }
+
+    [ServiceDescriptor(typeof(IMixedAttribute), ServiceLifetime.Scoped)]
+    [ServiceDescriptor<IMixedAttribute>(ServiceLifetime.Singleton)]
+    public class MixedAttribute : IMixedAttribute { }
 }
 
 namespace Scrutor.Tests.ChildNamespace
